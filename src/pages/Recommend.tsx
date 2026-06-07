@@ -26,8 +26,8 @@ import {
 import GlassCard from '@/components/ui/GlassCard';
 import { useStatsStore } from '@/store/statsStore';
 import { useSettingsStore } from '@/store/settingsStore';
-import { getRecommendation } from '@/services/recommendApi';
-import type { Recommendation, MaterialParams, DeviceGeometry } from '@/types';
+import { getRecommendation, type FullRecommendation, type PinnedLayerData } from '@/services/recommendApi';
+import type { MaterialParams, DeviceGeometry } from '@/types';
 import { cn } from '@/lib/utils';
 
 ChartJS.register(
@@ -106,10 +106,26 @@ function ProgressStat({ icon: Icon, label, value, pct, color }: ProgressStatProp
         <span className="text-text-primary font-medium">{value}</span>
       </div>
       <div className="h-1.5 rounded-full bg-space-800 overflow-hidden">
-        <motion.div initial={{ width: 0 }} animate={{ width: `${pct}%` }} className={cn('h-full rounded-full', color)} />
+        <motion.div initial={{ width: 0 }} animate={{ width: `${Math.min(100, pct)}%` }} className={cn('h-full rounded-full', color)} />
       </div>
     </div>
   );
+}
+
+function toCombo(p: PinnedLayerData, idx: number): PinnedLayerCombo {
+  const m1 = p.materials[0] ?? 'CoFeB';
+  const m2 = p.materials[1] ?? p.materials[0] ?? 'MgO';
+  const t1 = p.thicknesses[0] ?? 1.2;
+  const t2 = p.thicknesses[1] ?? p.thicknesses[0] ?? 0.8;
+  return {
+    id: `combo-${idx}`,
+    material1: m1, thickness1: t1,
+    material2: m2, thickness2: t2,
+    coercivity: p.expectedCoercivity,
+    thermalStability: p.thermalStability,
+    compatibility: Math.round(p.confidence * 100),
+    confidence: p.confidence,
+  };
 }
 
 export default function Recommend() {
@@ -117,12 +133,13 @@ export default function Recommend() {
   const { showToast } = useSettingsStore();
   const [expandedCombo, setExpandedCombo] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [writeRec, setWriteRec] = useState<Recommendation | null>(null);
-  const [pinnedCombos, setPinnedCombos] = useState<PinnedLayerCombo[]>([]);
+  const [recData, setRecData] = useState<FullRecommendation | null>(null);
   const [statsLoaded, setStatsLoaded] = useState(false);
 
   const defaultMaterial: Partial<MaterialParams> = {
     saturationMagnetization: 800000,
+    anisotropyConstant: 50000,
+    exchangeStiffness: 1.3e-11,
     dampingCoefficient: 0.01,
     temperature: 300,
     materialType: 'CoFeB',
@@ -133,33 +150,19 @@ export default function Recommend() {
     thickness: 3,
   };
 
+  const pinnedCombos = useMemo(
+    () => (recData?.pinnedLayers ?? []).map(toCombo),
+    [recData]
+  );
+
   const loadRecommendations = async () => {
     try {
       setLoading(true);
-      const [writeResp, pinnedResp] = await Promise.all([
-        getRecommendation({
-          type: 'write_current',
-          materialParams: defaultMaterial,
-          deviceLength: defaultGeometry.length,
-          deviceWidth: defaultGeometry.width,
-        }),
-        getRecommendation({
-          type: 'pinned_layer',
-          materialParams: defaultMaterial,
-          deviceLength: defaultGeometry.length,
-          deviceWidth: defaultGeometry.width,
-        }),
-      ]);
-      setWriteRec(writeResp);
-      if (pinnedResp) {
-        setPinnedCombos([{
-          id: 'combo-1',
-          material1: 'CoFeB', thickness1: 1.2,
-          material2: 'MgO', thickness2: 0.8,
-          coercivity: 45, thermalStability: 68,
-          compatibility: 92, confidence: pinnedResp.confidence,
-        }]);
-      }
+      const data = await getRecommendation({
+        materialParams: defaultMaterial,
+        geometry: defaultGeometry,
+      });
+      setRecData(data);
       if (!statsLoaded) {
         await loadDailyStats();
         setStatsLoaded(true);
@@ -175,7 +178,7 @@ export default function Recommend() {
     loadRecommendations();
   }, []);
 
-  if (loading && !writeRec) {
+  if (loading && !recData) {
     return (
       <div className="flex items-center justify-center h-64">
         <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
@@ -186,6 +189,12 @@ export default function Recommend() {
   const avgAccuracy = dailyStats.length > 0
     ? (dailyStats.reduce((a, b) => a + b.accuracy, 0) / dailyStats.length * 100).toFixed(1)
     : '95.2';
+
+  const writeCurrent = recData?.writeCurrent;
+  const alternatives = [
+    '采用 SOT 辅助写入方案, 降低写入电流约 15%',
+    '增加钉扎层厚度, 提高热稳定性 5%',
+  ];
 
   return (
     <div className="space-y-6">
@@ -209,7 +218,7 @@ export default function Recommend() {
             <h2 className="text-lg font-semibold">最优写入电流推荐</h2>
             <p className="text-xs text-text-muted">基于最近30天同类器件统计分析</p>
           </div>
-          <div className="ml-auto"><ConfidenceBadge value={writeRec?.confidence ?? 0} /></div>
+          <div className="ml-auto"><ConfidenceBadge value={writeCurrent?.confidence ?? 0} /></div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -219,19 +228,19 @@ export default function Recommend() {
                 <div>
                   <p className="text-xs text-text-muted mb-1">推荐值范围</p>
                   <p className="text-3xl font-bold text-gradient-magnetic">
-                    {writeRec?.recommendation?.match(/\d+/)?.[0] ?? '42'} ~ {String(Number(writeRec?.recommendation?.match(/\d+/)?.[0] ?? 42) + 6)} <span className="text-lg text-text-secondary">mA</span>
+                    {writeCurrent?.range.min ?? 42} ~ {writeCurrent?.range.max ?? 48} <span className="text-lg text-text-secondary">mA</span>
                   </p>
-                  <p className="text-sm text-text-secondary mt-1">推荐脉宽: 0.5 ns</p>
+                  <p className="text-sm text-text-secondary mt-1">最优值: {writeCurrent?.range.optimal ?? 45} mA · 推荐脉宽: 0.5 ns</p>
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-text-muted mb-1">置信度</p>
-                  <p className="text-2xl font-bold text-status-success">{Math.round((writeRec?.confidence ?? 0) * 100)}%</p>
+                  <p className="text-2xl font-bold text-status-success">{Math.round((writeCurrent?.confidence ?? 0) * 100)}%</p>
                 </div>
               </div>
               <div className="divider my-4" />
               <div className="flex items-start gap-2">
                 <Sparkles className="w-4 h-4 text-magnetic-purple mt-0.5 shrink-0" />
-                <p className="text-sm text-text-secondary leading-relaxed">{writeRec?.rationale ?? '基于历史数据统计的最优参数范围建议。'}</p>
+                <p className="text-sm text-text-secondary leading-relaxed">{writeCurrent?.rationale ?? '基于历史数据统计的最优参数范围建议。'}</p>
               </div>
             </div>
 
@@ -240,7 +249,7 @@ export default function Recommend() {
                 <Layers className="w-4 h-4" />替代方案对比
               </p>
               <div className="space-y-2">
-                {(writeRec?.alternatives ?? []).map((alt, idx) => {
+                {alternatives.map((alt, idx) => {
                   const conf = idx === 0 ? 0.88 : 0.82;
                   return (
                     <motion.div key={idx} whileHover={{ x: 4 }}
@@ -258,9 +267,6 @@ export default function Recommend() {
                     </motion.div>
                   );
                 })}
-                {(writeRec?.alternatives ?? []).length === 0 && (
-                  <p className="text-xs text-gray-500 text-center py-4">暂无替代方案</p>
-                )}
               </div>
             </div>
           </div>
@@ -305,7 +311,7 @@ export default function Recommend() {
                       {idx === 0 && <span className="badge badge-success"><CheckCircle2 className="w-3 h-3 mr-1" />首选</span>}
                       <ConfidenceBadge value={combo.confidence} />
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
                       <span className="px-2 py-1 rounded-md bg-magnetic-blue/15 text-magnetic-blue text-xs font-mono">{combo.material1}</span>
                       <span className="text-text-muted text-xs">{combo.thickness1}nm</span>
                       <span className="text-text-muted">/</span>
