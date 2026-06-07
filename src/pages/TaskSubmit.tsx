@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
-import { Atom, Box, Settings, Send, Upload, ChevronDown } from 'lucide-react';
+import { Atom, Box, Settings, Send, Upload, ChevronDown, Loader2 } from 'lucide-react';
 import GlassCard from '@/components/ui/GlassCard';
 import { useTaskStore } from '@/store/taskStore';
-import type { MaterialParams, DeviceGeometry, CalculationConfig, SimulationTask, DeviceShape } from '@/types';
-import { TaskStatus } from '@/types';
+import { useSettingsStore } from '@/store/settingsStore';
+import type { MaterialParams, DeviceGeometry, CalculationConfig, DeviceShape } from '@/types';
 import { cn } from '@/lib/utils';
 
 interface FieldProps {
@@ -75,9 +75,11 @@ function SectionHeader({ icon: Icon, title, subtitle, color }: {
 
 export default function TaskSubmit() {
   const navigate = useNavigate();
-  const { addTask } = useTaskStore();
+  const { createTaskAndRun, isSystemPaused } = useTaskStore();
+  const { showToast } = useSettingsStore();
   const [dragActive, setDragActive] = useState(false);
   const [stlFile, setStlFile] = useState<File | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
   const [material, setMaterial] = useState<MaterialParams>({
     saturationMagnetization: 800000, anisotropyConstant: 10000, exchangeStiffness: 1e-11,
@@ -97,15 +99,33 @@ export default function TaskSubmit() {
     if (f && f.name.endsWith('.stl')) setStlFile(f);
   };
 
-  const handleSubmit = () => {
-    addTask({
-      id: `task-${Date.now()}`,
-      name: `${material.materialType}-${geometry.shape}-${new Date().toLocaleDateString('zh-CN')}`,
-      status: TaskStatus.PENDING_VERIFY, materialParams: material,
-      geometry: { ...geometry, stlFile: stlFile ?? undefined }, config,
-      createdAt: new Date(), submittedBy: '当前用户', warnings: [],
-    } as SimulationTask);
-    navigate('/tasks/monitor');
+  const handleSubmit = async () => {
+    if (isSystemPaused) {
+      showToast('系统已暂停，无法提交新任务 (503)', 'error');
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const name = `${material.materialType}-${geometry.shape}-${new Date().toLocaleDateString('zh-CN')}`;
+      const task = await createTaskAndRun({
+        name,
+        materialParams: material,
+        geometry: { ...geometry, stlFile: stlFile ?? undefined },
+        config,
+        submittedBy: '当前用户',
+      });
+      showToast('任务提交成功', 'success');
+      navigate(`/tasks/monitor`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '提交失败';
+      if (msg.includes('503')) {
+        showToast('系统已暂停，无法提交新任务 (503)', 'error');
+      } else {
+        showToast(msg, 'error');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -114,6 +134,12 @@ export default function TaskSubmit() {
         <h1 className="text-2xl font-bold text-gray-100">任务提交中心</h1>
         <p className="text-sm text-gray-500 mt-1">配置微磁学模拟参数并提交计算任务</p>
       </div>
+
+      {isSystemPaused && (
+        <div className="flex items-center justify-between px-5 py-3 rounded-xl bg-status-danger/10 border border-status-danger/30">
+          <p className="text-sm text-status-danger">系统已暂停，暂无法提交新任务</p>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
         <GlassCard>
@@ -219,8 +245,10 @@ export default function TaskSubmit() {
       <div className="flex justify-end">
         <motion.button whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
           onClick={handleSubmit}
-          className="flex items-center gap-2 px-6 py-2.5 rounded-xl btn-primary font-medium shadow-glow-blue">
-          <Send className="w-4 h-4" />提交任务
+          disabled={submitting || isSystemPaused}
+          className="flex items-center gap-2 px-6 py-2.5 rounded-xl btn-primary font-medium shadow-glow-blue disabled:opacity-50 disabled:cursor-not-allowed">
+          {submitting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+          {submitting ? '提交中...' : '提交任务'}
         </motion.button>
       </div>
     </div>

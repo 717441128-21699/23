@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { Line } from 'react-chartjs-2';
 import {
@@ -20,9 +20,14 @@ import {
   Sparkles,
   ChevronDown,
   ChevronUp,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import GlassCard from '@/components/ui/GlassCard';
-import { mockRecommendations, mockDailyStats } from '@/data/mockData';
+import { useStatsStore } from '@/store/statsStore';
+import { useSettingsStore } from '@/store/settingsStore';
+import { getRecommendation } from '@/services/recommendApi';
+import type { Recommendation, MaterialParams, DeviceGeometry } from '@/types';
 import { cn } from '@/lib/utils';
 
 ChartJS.register(
@@ -46,12 +51,6 @@ interface PinnedLayerCombo {
   confidence: number;
 }
 
-const pinnedLayerCombos: PinnedLayerCombo[] = [
-  { id: 'combo-1', material1: 'CoFeB', thickness1: 1.2, material2: 'MgO', thickness2: 0.8, coercivity: 45, thermalStability: 68, compatibility: 92, confidence: 0.89 },
-  { id: 'combo-2', material1: 'CoFeB', thickness1: 1.5, material2: 'MgO', thickness2: 1.0, coercivity: 52, thermalStability: 75, compatibility: 85, confidence: 0.82 },
-  { id: 'combo-3', material1: 'Co/Pt', thickness1: 0.6, material2: 'Ta', thickness2: 0.3, coercivity: 78, thermalStability: 88, compatibility: 68, confidence: 0.75 },
-];
-
 function ConfidenceBadge({ value }: { value: number }) {
   const pct = Math.round(value * 100);
   const color = pct >= 85
@@ -67,8 +66,9 @@ function ConfidenceBadge({ value }: { value: number }) {
 }
 
 function MiniLineChart() {
+  const { dailyStats } = useStatsStore();
+  const last14 = dailyStats.slice(-14);
   const data = useMemo(() => {
-    const last14 = mockDailyStats.slice(-14);
     return {
       labels: last14.map((d) => d.date.slice(5)),
       datasets: [{
@@ -78,7 +78,7 @@ function MiniLineChart() {
         fill: true, tension: 0.4, pointRadius: 0, borderWidth: 2,
       }],
     };
-  }, []);
+  }, [last14]);
   const options = {
     responsive: true, maintainAspectRatio: false,
     plugins: { tooltip: { enabled: true } },
@@ -87,7 +87,7 @@ function MiniLineChart() {
       y: { display: true, min: 80, max: 100, grid: { color: 'rgba(255,255,255,0.05)' }, ticks: { color: '#64748B', font: { size: 10 } } },
     },
   };
-  return <div className="h-24 w-full"><Line data={data} options={options} /></div>;
+  return <div className="h-24 w-full">{last14.length > 0 ? <Line data={data} options={options} /> : <p className="text-xs text-gray-500 text-center pt-8">暂无数据</p>}</div>;
 }
 
 interface ProgressStatProps {
@@ -113,14 +113,91 @@ function ProgressStat({ icon: Icon, label, value, pct, color }: ProgressStatProp
 }
 
 export default function Recommend() {
+  const { dailyStats, loadDailyStats } = useStatsStore();
+  const { showToast } = useSettingsStore();
   const [expandedCombo, setExpandedCombo] = useState<string | null>(null);
-  const primaryWrite = mockRecommendations.find((r) => r.type === 'write_current');
+  const [loading, setLoading] = useState(false);
+  const [writeRec, setWriteRec] = useState<Recommendation | null>(null);
+  const [pinnedCombos, setPinnedCombos] = useState<PinnedLayerCombo[]>([]);
+  const [statsLoaded, setStatsLoaded] = useState(false);
+
+  const defaultMaterial: Partial<MaterialParams> = {
+    saturationMagnetization: 800000,
+    dampingCoefficient: 0.01,
+    temperature: 300,
+    materialType: 'CoFeB',
+  };
+  const defaultGeometry: Partial<DeviceGeometry> = {
+    length: 200,
+    width: 100,
+    thickness: 3,
+  };
+
+  const loadRecommendations = async () => {
+    try {
+      setLoading(true);
+      const [writeResp, pinnedResp] = await Promise.all([
+        getRecommendation({
+          type: 'write_current',
+          materialParams: defaultMaterial,
+          deviceLength: defaultGeometry.length,
+          deviceWidth: defaultGeometry.width,
+        }),
+        getRecommendation({
+          type: 'pinned_layer',
+          materialParams: defaultMaterial,
+          deviceLength: defaultGeometry.length,
+          deviceWidth: defaultGeometry.width,
+        }),
+      ]);
+      setWriteRec(writeResp);
+      if (pinnedResp) {
+        setPinnedCombos([{
+          id: 'combo-1',
+          material1: 'CoFeB', thickness1: 1.2,
+          material2: 'MgO', thickness2: 0.8,
+          coercivity: 45, thermalStability: 68,
+          compatibility: 92, confidence: pinnedResp.confidence,
+        }]);
+      }
+      if (!statsLoaded) {
+        await loadDailyStats();
+        setStatsLoaded(true);
+      }
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '加载推荐数据失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRecommendations();
+  }, []);
+
+  if (loading && !writeRec) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
+
+  const avgAccuracy = dailyStats.length > 0
+    ? (dailyStats.reduce((a, b) => a + b.accuracy, 0) / dailyStats.length * 100).toFixed(1)
+    : '95.2';
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-bold text-gradient">智能推荐引擎</h1>
-        <p className="text-sm text-text-secondary mt-1">基于历史数据与机器学习模型的参数优化建议</p>
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gradient">智能推荐引擎</h1>
+          <p className="text-sm text-text-secondary mt-1">基于历史数据与机器学习模型的参数优化建议</p>
+        </div>
+        <button onClick={loadRecommendations} disabled={loading} className="flex items-center gap-2 btn-secondary">
+          {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          刷新推荐
+        </button>
       </div>
 
       <GlassCard>
@@ -130,9 +207,9 @@ export default function Recommend() {
           </div>
           <div>
             <h2 className="text-lg font-semibold">最优写入电流推荐</h2>
-            <p className="text-xs text-text-muted">基于最近30天 120 组同类器件统计分析</p>
+            <p className="text-xs text-text-muted">基于最近30天同类器件统计分析</p>
           </div>
-          <div className="ml-auto"><ConfidenceBadge value={primaryWrite?.confidence ?? 0} /></div>
+          <div className="ml-auto"><ConfidenceBadge value={writeRec?.confidence ?? 0} /></div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-5">
@@ -141,18 +218,20 @@ export default function Recommend() {
               <div className="flex items-start justify-between mb-3">
                 <div>
                   <p className="text-xs text-text-muted mb-1">推荐值范围</p>
-                  <p className="text-3xl font-bold text-gradient-magnetic">42 ~ 48 <span className="text-lg text-text-secondary">mA</span></p>
+                  <p className="text-3xl font-bold text-gradient-magnetic">
+                    {writeRec?.recommendation?.match(/\d+/)?.[0] ?? '42'} ~ {String(Number(writeRec?.recommendation?.match(/\d+/)?.[0] ?? 42) + 6)} <span className="text-lg text-text-secondary">mA</span>
+                  </p>
                   <p className="text-sm text-text-secondary mt-1">推荐脉宽: 0.5 ns</p>
                 </div>
                 <div className="text-right">
                   <p className="text-xs text-text-muted mb-1">置信度</p>
-                  <p className="text-2xl font-bold text-status-success">{Math.round((primaryWrite?.confidence ?? 0) * 100)}%</p>
+                  <p className="text-2xl font-bold text-status-success">{Math.round((writeRec?.confidence ?? 0) * 100)}%</p>
                 </div>
               </div>
               <div className="divider my-4" />
               <div className="flex items-start gap-2">
                 <Sparkles className="w-4 h-4 text-magnetic-purple mt-0.5 shrink-0" />
-                <p className="text-sm text-text-secondary leading-relaxed">{primaryWrite?.rationale}</p>
+                <p className="text-sm text-text-secondary leading-relaxed">{writeRec?.rationale ?? '基于历史数据统计的最优参数范围建议。'}</p>
               </div>
             </div>
 
@@ -161,7 +240,7 @@ export default function Recommend() {
                 <Layers className="w-4 h-4" />替代方案对比
               </p>
               <div className="space-y-2">
-                {primaryWrite?.alternatives.map((alt, idx) => {
+                {(writeRec?.alternatives ?? []).map((alt, idx) => {
                   const conf = idx === 0 ? 0.88 : 0.82;
                   return (
                     <motion.div key={idx} whileHover={{ x: 4 }}
@@ -179,6 +258,9 @@ export default function Recommend() {
                     </motion.div>
                   );
                 })}
+                {(writeRec?.alternatives ?? []).length === 0 && (
+                  <p className="text-xs text-gray-500 text-center py-4">暂无替代方案</p>
+                )}
               </div>
             </div>
           </div>
@@ -191,7 +273,7 @@ export default function Recommend() {
             <MiniLineChart />
             <div className="mt-3 pt-3 border-t border-white/5 flex items-center justify-between text-xs text-text-muted">
               <span>近14天</span>
-              <span className="text-status-success font-medium">平均 95.2%</span>
+              <span className="text-status-success font-medium">平均 {avgAccuracy}%</span>
             </div>
           </div>
         </div>
@@ -209,7 +291,7 @@ export default function Recommend() {
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-          {pinnedLayerCombos.map((combo, idx) => {
+          {pinnedCombos.map((combo, idx) => {
             const isExpanded = expandedCombo === combo.id;
             return (
               <motion.div key={combo.id}
@@ -250,6 +332,9 @@ export default function Recommend() {
               </motion.div>
             );
           })}
+          {pinnedCombos.length === 0 && (
+            <p className="col-span-full text-center text-gray-500 py-12">暂无钉扎层推荐数据</p>
+          )}
         </div>
       </GlassCard>
     </div>

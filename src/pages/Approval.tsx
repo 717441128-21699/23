@@ -9,12 +9,13 @@ import {
   User,
   CheckCircle2,
   XCircle,
+  Loader2,
 } from 'lucide-react';
 import GlassCard from '@/components/ui/GlassCard';
 import ApprovalCard from '@/components/ui/ApprovalCard';
 import { useTaskStore } from '@/store/taskStore';
-import { mockTasks } from '@/data/mockData';
-import { submitApproval, rejectToRecalculate, getApprovalHistory } from '@/services/approvalService';
+import { useSettingsStore } from '@/store/settingsStore';
+import { fetchApprovals, submitApproval as apiSubmitApproval } from '@/services/approvalApi';
 import { TaskStatus } from '@/types';
 import type { ApprovalRecord, SimulationTask } from '@/types';
 import { cn } from '@/lib/utils';
@@ -86,8 +87,8 @@ function ParamItem({ label, value }: { label: string; value: string }) {
   );
 }
 
-function DetailPanel({ task }: { task: SimulationTask }) {
-  const history = getApprovalHistory(task.id);
+function DetailPanel({ task, approvals }: { task: SimulationTask; approvals: ApprovalRecord[] }) {
+  const history = approvals.filter(a => a.taskId === task.id);
   const p = task.materialParams;
   const g = task.geometry;
 
@@ -137,25 +138,81 @@ function DetailPanel({ task }: { task: SimulationTask }) {
 export default function Approval() {
   const [activeTab, setActiveTab] = useState<ApprovalTab>('l1');
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  const { tasks } = useTaskStore();
+  const [loading, setLoading] = useState(true);
+  const [submitting, setSubmitting] = useState<string | null>(null);
+  const { tasks, loadTasks } = useTaskStore();
+  const { showToast } = useSettingsStore();
+  const [approvals, setApprovals] = useState<ApprovalRecord[]>([]);
+
+  const refresh = async () => {
+    try {
+      setLoading(true);
+      await Promise.all([
+        loadTasks(),
+        fetchApprovals().then(setApprovals),
+      ]);
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '加载数据失败', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   useEffect(() => {
-    if (useTaskStore.getState().tasks.length === 0) {
-      mockTasks.forEach((t) => useTaskStore.getState().addTask(t));
-    }
+    refresh();
   }, []);
 
   const filtered = tasks.filter((t) => getStatusFilter(activeTab).includes(t.status));
 
-  const handleApprove = (taskId: string, comment: string) => {
-    const task = tasks.find((t) => t.id === taskId);
-    const level = task?.status === TaskStatus.APPROVAL_L2 ? 2 : 1;
-    submitApproval(taskId, level, 'approved', comment);
+  const handleApprove = async (taskId: string, comment: string) => {
+    try {
+      setSubmitting(taskId);
+      const task = tasks.find((t) => t.id === taskId);
+      const level = task?.status === TaskStatus.APPROVAL_L2 ? 2 : 1;
+      await apiSubmitApproval({
+        taskId,
+        level,
+        approver: '当前用户',
+        decision: 'approved',
+        comment,
+      });
+      showToast('审批通过', 'success');
+      await refresh();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '审批失败', 'error');
+    } finally {
+      setSubmitting(null);
+    }
   };
 
-  const handleReject = (taskId: string, comment: string) => {
-    rejectToRecalculate(taskId, comment || '参数需重新核查');
+  const handleReject = async (taskId: string, comment: string) => {
+    try {
+      setSubmitting(taskId);
+      const task = tasks.find((t) => t.id === taskId);
+      const level = task?.status === TaskStatus.APPROVAL_L2 ? 2 : 1;
+      await apiSubmitApproval({
+        taskId,
+        level,
+        approver: '当前用户',
+        decision: 'rejected',
+        comment: comment || '参数需重新核查',
+      });
+      showToast('已驳回', 'success');
+      await refresh();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    } finally {
+      setSubmitting(null);
+    }
   };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -225,8 +282,9 @@ export default function Approval() {
                   onReject={handleReject}
                   expanded={expandedId === task.id}
                   onToggle={() => setExpandedId(expandedId === task.id ? null : task.id)}
+                  disabled={submitting === task.id}
                 />
-                {expandedId === task.id && <DetailPanel task={task} />}
+                {expandedId === task.id && <DetailPanel task={task} approvals={approvals} />}
               </div>
             ))
           )}

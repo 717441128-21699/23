@@ -1,9 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { ChevronDown, Zap, Box, Activity, Layers } from 'lucide-react';
+import { ChevronDown, Zap, Box, Activity, Layers, Loader2 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { useTaskStore } from '@/store/taskStore';
-import { mockTasks } from '@/data/mockData';
+import { useSettingsStore } from '@/store/settingsStore';
 import { TaskStatus } from '@/types';
 import GlassCard from '@/components/ui/GlassCard';
 import TaskTimeline from '@/components/visual/TaskTimeline';
@@ -17,14 +17,73 @@ import { statusBadgeMap } from '@/components/visual/statusBadge';
 type BottomTab = 'domain3d' | 'vortex';
 
 export default function TaskMonitor() {
-  const { tasks, setCurrentTaskId, currentTaskId } = useTaskStore();
+  const { tasks, loadTasks, loadTask, setCurrentTaskId, currentTaskId, getTaskById } = useTaskStore();
+  const { showToast } = useSettingsStore();
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [bottomTab, setBottomTab] = useState<BottomTab>('domain3d');
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const intervalRef = useRef<number | null>(null);
 
-  const allTasks = tasks.length ? tasks : mockTasks;
+  useEffect(() => {
+    const init = async () => {
+      try {
+        setLoading(true);
+        await loadTasks();
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载任务列表失败', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
+  }, [loadTasks, showToast]);
+
+  useEffect(() => {
+    if (tasks.length > 0 && !currentTaskId) {
+      setCurrentTaskId(tasks[0].id);
+    }
+  }, [tasks, currentTaskId, setCurrentTaskId]);
+
+  useEffect(() => {
+    if (!currentTaskId) return;
+    const fetchDetail = async () => {
+      try {
+        setRefreshing(true);
+        await loadTask(currentTaskId);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载任务详情失败', 'error');
+      } finally {
+        setRefreshing(false);
+      }
+    };
+    fetchDetail();
+  }, [currentTaskId, loadTask, showToast]);
+
+  useEffect(() => {
+    if (!currentTaskId) return;
+    const task = getTaskById(currentTaskId);
+    const isRunning = task && task.status !== TaskStatus.COMPLETED && task.status !== TaskStatus.ABNORMAL;
+    if (isRunning) {
+      intervalRef.current = window.setInterval(async () => {
+        try {
+          await loadTask(currentTaskId);
+        } catch (err) {
+          console.error('refresh failed:', err);
+        }
+      }, 2000);
+    }
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+        intervalRef.current = null;
+      }
+    };
+  }, [currentTaskId, getTaskById, loadTask]);
+
   const currentTask = useMemo(
-    () => allTasks.find((t) => t.id === currentTaskId) ?? allTasks[0],
-    [allTasks, currentTaskId]
+    () => (currentTaskId ? getTaskById(currentTaskId) : undefined),
+    [currentTaskId, getTaskById]
   );
 
   const statusInfo = currentTask
@@ -36,6 +95,14 @@ export default function TaskMonitor() {
     currentTask?.currentStep && currentTask?.totalSteps
       ? Math.round((currentTask.currentStep / currentTask.totalSteps) * 100)
       : 0;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen flex items-center justify-center">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen p-4 md:p-6 lg:p-8">
@@ -74,7 +141,7 @@ export default function TaskMonitor() {
                     exit={{ opacity: 0, y: -5, scale: 0.98 }}
                     className="absolute top-full left-0 right-0 mt-2 z-50 glass-panel p-1.5 max-h-64 overflow-y-auto scrollbar-thin"
                   >
-                    {allTasks.map((t) => {
+                    {tasks.map((t) => {
                       const info = statusBadgeMap[t.status];
                       const Icon = info.icon;
                       const active = t.id === currentTask?.id;
@@ -110,6 +177,7 @@ export default function TaskMonitor() {
             <span className={cn(statusInfo.className, 'flex items-center gap-1.5')}>
               <StatusIcon className="w-3.5 h-3.5" />
               {statusInfo.label}
+              {refreshing && <Loader2 className="w-3 h-3 animate-spin ml-1" />}
             </span>
           </div>
         </motion.div>
@@ -219,7 +287,7 @@ export default function TaskMonitor() {
                     <div className="flex items-center gap-3 text-xs">
                       <span className="text-text-muted">检测到涡旋态:</span>
                       <span className="text-accent-purple font-mono font-medium">
-                        {currentTask?.results?.vortexStates?.length ?? 2} 个
+                        {currentTask?.results?.vortexStates?.length ?? 0} 个
                       </span>
                     </div>
                   )}

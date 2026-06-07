@@ -1,9 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Doughnut } from 'react-chartjs-2';
 import {
   LayoutDashboard, CheckSquare, Activity, AlertTriangle,
-  Play, Clock, Check, X, RefreshCw,
+  Play, Clock, Check, X, RefreshCw, Loader2,
 } from 'lucide-react';
 import GlassCard from '@/components/ui/GlassCard';
 import StatCard from '@/components/ui/StatCard';
@@ -11,7 +11,7 @@ import WarningCard from '@/components/ui/WarningCard';
 import { useTaskStore } from '@/store/taskStore';
 import { useWarningStore } from '@/store/warningStore';
 import { useStatsStore } from '@/store/statsStore';
-import { mockTasks, mockWarnings, mockDailyStats } from '@/data/mockData';
+import { useSettingsStore } from '@/store/settingsStore';
 import { TaskStatus } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -54,17 +54,42 @@ function formatTime(date: Date): string {
 }
 
 export default function Dashboard() {
-  const { tasks, isSystemPaused, toggleSystemPause } = useTaskStore();
-  const { markReviewed, getUnreviewedWarnings } = useWarningStore();
-  const { getTotalStats, dailyStats } = useStatsStore();
+  const { tasks, isSystemPaused, fetchSystemStatus, resumeSystem } = useTaskStore();
+  const { warnings, loadWarnings, reviewWarning, getUnreviewedWarnings } = useWarningStore();
+  const { summary, dailyStats, loadSystemStatus, loadSummary, systemStatus } = useStatsStore();
+  const { showToast } = useSettingsStore();
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (useTaskStore.getState().tasks.length === 0) mockTasks.forEach(t => useTaskStore.getState().addTask(t));
-    if (useWarningStore.getState().warnings.length === 0) mockWarnings.forEach(w => useWarningStore.getState().addWarning(w));
-    if (useStatsStore.getState().dailyStats.length === 0) mockDailyStats.forEach(s => useStatsStore.getState().addStats(s));
-  }, []);
+    const loadData = async () => {
+      try {
+        setLoading(true);
+        await Promise.all([
+          useTaskStore.getState().loadTasks(),
+          loadWarnings(),
+          loadSystemStatus(),
+          loadSummary(),
+          fetchSystemStatus(),
+        ]);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载数据失败', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+    loadData();
+  }, [loadWarnings, loadSystemStatus, loadSummary, fetchSystemStatus, showToast]);
 
-  const stats = getTotalStats();
+  const stats = summary
+    ? {
+        totalTasks: summary.totalTasks,
+        avgCompletionRate: summary.avgCompletionRate ?? summary.completionRate ?? 0,
+        avgFlipTime: summary.avgFlipTime ?? summary.averageFlipTime ?? 0,
+        avgAccuracy: summary.avgAccuracy ?? summary.averageAccuracy ?? 0,
+        totalAbnormal: summary.totalAbnormal ?? 0,
+        totalWarnings: summary.totalWarnings ?? 0,
+      }
+    : { totalTasks: 0, avgCompletionRate: 0, avgFlipTime: 0, avgAccuracy: 0, totalAbnormal: 0, totalWarnings: 0 };
   const unreviewed = getUnreviewedWarnings();
   const today = dailyStats[dailyStats.length - 1];
 
@@ -89,7 +114,32 @@ export default function Dashboard() {
   };
 
   const recentTasks = [...tasks].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()).slice(0, 5);
-  const handleAction = (id: string, action: 'accept' | 'recalculate' | 'reject') => markReviewed(id, '当前用户', action);
+
+  const handleResume = async () => {
+    try {
+      await resumeSystem();
+      showToast('系统已恢复运行', 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '恢复系统失败', 'error');
+    }
+  };
+
+  const handleAction = async (id: string, action: 'accept' | 'recalculate' | 'reject') => {
+    try {
+      await reviewWarning(id, { action, reviewedBy: '当前用户' });
+      showToast(`已${action === 'accept' ? '通过' : action === 'recalculate' ? '重算' : '驳回'}`, 'success');
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -103,10 +153,10 @@ export default function Dashboard() {
               </div>
               <div>
                 <p className="font-semibold text-status-danger">系统已暂停</p>
-                <p className="text-sm text-text-secondary">连续3次异常翻转，已通知首席科学家</p>
+                <p className="text-sm text-text-secondary">连续3次异常翻转{systemStatus?.chiefScientistNotified && <span className="ml-2 badge badge-success text-xs">已通知首席科学家</span>}</p>
               </div>
             </div>
-            <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={toggleSystemPause}
+            <motion.button whileHover={{ scale: 1.03 }} whileTap={{ scale: 0.97 }} onClick={handleResume}
               className="flex items-center gap-2 px-4 py-2 rounded-lg bg-status-danger/20 text-status-danger border border-status-danger/40 hover:bg-status-danger/30 font-medium text-sm">
               <Play className="w-4 h-4" />恢复系统
             </motion.button>

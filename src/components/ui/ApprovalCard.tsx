@@ -19,6 +19,7 @@ interface ApprovalCardProps {
   onReject: (taskId: string, comment: string) => void;
   expanded?: boolean;
   onToggle?: () => void;
+  disabled?: boolean;
 }
 
 const approvalSteps: { key: TaskStatus | 'pending'; label: string }[] = [
@@ -47,7 +48,7 @@ function MiniStat({ label, value, unit }: { label: string; value: string; unit?:
   );
 }
 
-export default function ApprovalCard({ task, onApprove, onReject, expanded, onToggle }: ApprovalCardProps) {
+export default function ApprovalCard({ task, onApprove, onReject, expanded, onToggle, disabled }: ApprovalCardProps) {
   const [comment, setComment] = useState('');
   const currentStep = getCurrentStepIndex(task.status);
   const level = task.status === TaskStatus.APPROVAL_L2 ? 2 : 1;
@@ -165,6 +166,7 @@ export default function ApprovalCard({ task, onApprove, onReject, expanded, onTo
                 onChange={(e) => setComment(e.target.value)}
                 placeholder="输入审批意见（选填）..."
                 className="input-field min-h-[72px] resize-none text-sm"
+                disabled={disabled}
               />
               <div className="flex items-center gap-3">
                 <motion.button
@@ -172,6 +174,7 @@ export default function ApprovalCard({ task, onApprove, onReject, expanded, onTo
                   whileTap={{ scale: 0.98 }}
                   onClick={() => { onApprove(task.id, comment); setComment(''); }}
                   className="btn-primary flex items-center gap-2 flex-1 justify-center"
+                  disabled={disabled}
                 >
                   <CheckCircle2 className="w-4 h-4" />同意
                 </motion.button>
@@ -179,7 +182,8 @@ export default function ApprovalCard({ task, onApprove, onReject, expanded, onTo
                   whileHover={{ scale: 1.02 }}
                   whileTap={{ scale: 0.98 }}
                   onClick={() => { onReject(task.id, comment); setComment(''); }}
-                  className="flex items-center gap-2 flex-1 justify-center px-5 py-2.5 rounded-lg font-medium text-sm bg-status-danger/15 text-status-danger border border-status-danger/30 hover:bg-status-danger/25 transition-colors"
+                  className="flex items-center gap-2 flex-1 justify-center px-5 py-2.5 rounded-lg font-medium text-sm bg-status-danger/15 text-status-danger border border-status-danger/30 hover:bg-status-danger/25 transition-colors disabled:opacity-50"
+                  disabled={disabled}
                 >
                   <XCircle className="w-4 h-4" />驳回
                 </motion.button>

@@ -1,10 +1,10 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Filter, RefreshCw } from 'lucide-react';
+import { Filter, RefreshCw, Loader2 } from 'lucide-react';
 import WarningCard from '@/components/ui/WarningCard';
 import ParamSlider from '@/components/ui/ParamSlider';
 import { useWarningStore } from '@/store/warningStore';
 import { useTaskStore } from '@/store/taskStore';
-import { mockWarnings, mockTasks } from '@/data/mockData';
+import { useSettingsStore } from '@/store/settingsStore';
 import type { WarningType, WarningAction, CalculationConfig } from '@/types';
 import { cn } from '@/lib/utils';
 
@@ -22,27 +22,44 @@ export default function Warnings() {
   const [activeTab, setActiveTab] = useState<TabKey>('all');
   const [expandedWarningId, setExpandedWarningId] = useState<string | null>(null);
   const [paramValues, setParamValues] = useState<Record<string, Partial<CalculationConfig>>>({});
+  const [loading, setLoading] = useState(true);
 
-  const { warnings, markReviewed } = useWarningStore();
-  const { tasks, getTaskById } = useTaskStore();
+  const { warnings, loadWarnings, reviewWarning } = useWarningStore();
+  const { tasks, loadTasks, getTaskById } = useTaskStore();
+  const { showToast } = useSettingsStore();
 
   useEffect(() => {
-    if (warnings.length === 0) {
-      mockWarnings.forEach((w) => useWarningStore.getState().addWarning(w));
-    }
-    if (tasks.length === 0) {
-      mockTasks.forEach((t) => useTaskStore.getState().addTask(t));
-    }
-  }, [warnings.length, tasks.length]);
+    const init = async () => {
+      try {
+        setLoading(true);
+        await Promise.all([loadWarnings(), loadTasks()]);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载数据失败', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
+  }, [loadWarnings, loadTasks, showToast]);
 
   const filteredWarnings = useMemo(() => {
-    if (activeTab === 'all') return warnings;
+    if (activeTab === 'all') return warnings.filter(w => !w.reviewed);
     if (activeTab === 'reviewed') return warnings.filter((w) => w.reviewed);
     return warnings.filter((w) => w.type === activeTab && !w.reviewed);
   }, [warnings, activeTab]);
 
-  const handleAction = (warningId: string, action: WarningAction) => {
-    markReviewed(warningId, '当前用户', action, paramValues[warningId]);
+  const handleAction = async (warningId: string, action: WarningAction) => {
+    try {
+      await reviewWarning(warningId, {
+        action,
+        adjustedParams: paramValues[warningId],
+        reviewedBy: '当前用户',
+      });
+      showToast(`已${action === 'accept' ? '通过' : action === 'recalculate' ? '重算' : '驳回'}`, 'success');
+      await loadWarnings();
+    } catch (err) {
+      showToast(err instanceof Error ? err.message : '操作失败', 'error');
+    }
     setExpandedWarningId(null);
   };
 
@@ -50,7 +67,7 @@ export default function Warnings() {
     setExpandedWarningId((prev) => (prev === warningId ? null : warningId));
   };
 
-  const updateParam = (warningId: string, key: keyof CalculationConfig, value: number) => {
+  const updateParam = (warningId: string, key: keyof CalculationConfig, value: number | Partial<CalculationConfig['externalField']>) => {
     setParamValues((prev) => ({
       ...prev,
       [warningId]: {
@@ -67,6 +84,14 @@ export default function Warnings() {
     return task?.config;
   };
 
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen p-8">
       <div className="bg-magnetic-field" />
@@ -76,7 +101,8 @@ export default function Warnings() {
             <h1 className="text-3xl font-bold mb-2 text-gradient">预警复核工作台</h1>
             <p className="text-text-secondary">审核模拟过程中触发的预警，决定是否通过、重算或驳回</p>
           </div>
-          <button className="flex items-center gap-2 btn-secondary">
+          <button onClick={async () => { try { await loadWarnings(); showToast('已刷新', 'success'); } catch (e) { showToast('刷新失败', 'error'); } }}
+            className="flex items-center gap-2 btn-secondary">
             <RefreshCw className="w-4 h-4" />
             刷新
           </button>
@@ -156,7 +182,7 @@ export default function Warnings() {
                         max={1000}
                         originalValue={config.externalField.magnitude}
                         value={currentParams.externalField?.magnitude ?? config.externalField.magnitude}
-                        onChange={(v) => updateParam(warning.id, 'externalField', { ...config.externalField, magnitude: v } as any)}
+                        onChange={(v) => updateParam(warning.id, 'externalField', { ...config.externalField, magnitude: v })}
                         recommendedMin={100}
                         recommendedMax={500}
                       />

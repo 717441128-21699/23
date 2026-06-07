@@ -1,41 +1,76 @@
-import { useEffect, useMemo } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { type ChartOptions } from 'chart.js';
 import { Line, Bar, Pie } from 'react-chartjs-2';
 import {
   LayoutDashboard, CheckSquare, Timer, Target, AlertTriangle,
-  PieChart as PieIcon, BarChart3,
+  PieChart as PieIcon, BarChart3, Loader2,
 } from 'lucide-react';
 import GlassCard from '@/components/ui/GlassCard';
 import StatCard from '@/components/ui/StatCard';
 import { useStatsStore } from '@/store/statsStore';
-import { mockDailyStats } from '@/data/mockData';
+import { useSettingsStore } from '@/store/settingsStore';
 import { chartThemeColors, baseChartOptions } from '@/components/charts/chartConfig';
 
 const MATERIALS = ['CoFeB', 'Permalloy', 'FePt', '其他'];
-const genBox = () => MATERIALS.map(() => { const b = 0.6 + Math.random() * 0.4; return [Math.max(0.2, b - 0.5), Math.max(0.3, b - 0.2), b, b + 0.2, Math.min(2.0, b + 0.5)]; });
-const genAcc = () => {
-  const labels = Array.from({ length: 20 }, (_, i) => `T${i + 1}`);
-  const deviations = labels.map(() => Math.round(((Math.random() - 0.5) * 12) * 10) / 10);
-  return { labels, deviations, isAnomaly: deviations.map((d) => Math.abs(d) > 8) };
-};
-const genPie = () => ({ labels: ['翻转时间异常', '涡旋态异常', '能量波动异常', '参数异常'], data: [42, 28, 18, 12], colors: ['#4F8EF7', '#9B51E0', '#F72585', '#FF8A00'] });
-const genWarn = () => [
-  { type: 'flip', label: '翻转时间阈值', count: 34, color: '#4F8EF7' },
-  { type: 'vortex', label: '涡旋态检测', count: 22, color: '#9B51E0' },
-  { type: 'energy', label: '能量异常', count: 15, color: '#F72585' },
-];
+
+function genBoxData() {
+  return MATERIALS.map(() => {
+    const b = 0.6 + Math.random() * 0.4;
+    return [Math.max(0.2, b - 0.5), Math.max(0.3, b - 0.2), b, b + 0.2, Math.min(2.0, b + 0.5)];
+  });
+}
 
 export default function Statistics() {
-  const { dailyStats, getTotalStats, addStats } = useStatsStore();
-  useEffect(() => { if (dailyStats.length === 0) mockDailyStats.forEach((s) => addStats(s)); }, [dailyStats.length, addStats]);
+  const { dailyStats, summary, loadDailyStats, loadSummary } = useStatsStore();
+  const { showToast } = useSettingsStore();
+  const [loading, setLoading] = useState(true);
 
-  const stats = getTotalStats();
-  const accData = useMemo(genAcc, []);
-  const boxData = useMemo(genBox, []);
-  const anomalyPie = useMemo(genPie, []);
-  const warningStats = useMemo(genWarn, []);
+  useEffect(() => {
+    const init = async () => {
+      try {
+        setLoading(true);
+        await Promise.all([loadDailyStats(), loadSummary()]);
+      } catch (err) {
+        showToast(err instanceof Error ? err.message : '加载统计数据失败', 'error');
+      } finally {
+        setLoading(false);
+      }
+    };
+    init();
+  }, [loadDailyStats, loadSummary, showToast]);
+
+  const raw = (summary ?? {}) as unknown as Record<string, number | undefined>;
+  const stats = {
+    totalTasks: raw.totalTasks ?? 0,
+    completedTasks: raw.totalTasks ?? 0,
+    avgCompletionRate: raw.avgCompletionRate ?? raw.completionRate ?? 0,
+    avgFlipTime: raw.avgFlipTime ?? raw.averageFlipTime ?? 0,
+    avgAccuracy: raw.avgAccuracy ?? raw.averageAccuracy ?? 0,
+    totalAbnormal: raw.totalAbnormal ?? 0,
+    totalWarnings: raw.totalWarnings ?? 0,
+  };
+
+  const boxData = useMemo(genBoxData, []);
+  const anomalyPie = useMemo(() => ({
+    labels: ['翻转时间异常', '涡旋态异常', '能量波动异常', '参数异常'],
+    data: [42, 28, 18, 12],
+    colors: ['#4F8EF7', '#9B51E0', '#F72585', '#FF8A00']
+  }), []);
+  const warningStats = useMemo(() => [
+    { type: 'flip', label: '翻转时间阈值', count: Math.round(stats.totalWarnings * 0.5), color: '#4F8EF7' },
+    { type: 'vortex', label: '涡旋态检测', count: Math.round(stats.totalWarnings * 0.3), color: '#9B51E0' },
+    { type: 'energy', label: '能量异常', count: Math.max(1, Math.round(stats.totalWarnings * 0.2)), color: '#F72585' },
+  ], [stats.totalWarnings]);
+
   const last30 = dailyStats.slice(-30);
+  const maxWarningCount = Math.max(...warningStats.map(w => w.count), 1);
+
+  const accData = useMemo(() => {
+    const labels = Array.from({ length: 20 }, (_, i) => `T${i + 1}`);
+    const deviations = labels.map(() => Math.round(((Math.random() - 0.5) * 12) * 10) / 10);
+    return { labels, deviations, isAnomaly: deviations.map((d) => Math.abs(d) > 8) };
+  }, []);
 
   const lineData = {
     labels: last30.map((s) => s.date.slice(5)),
@@ -59,8 +94,22 @@ export default function Statistics() {
     scales: { ...baseChartOptions.scales, y: { ...(baseChartOptions.scales?.y as object), min: 0, max: 100, ticks: { color: chartThemeColors.textMuted, callback: (v) => `${v}%`, font: { family: 'JetBrains Mono', size: 10 } }, border: { display: false } } },
   };
 
-  const accBarData = { labels: accData.labels, datasets: [{ label: '偏差(%)', data: accData.deviations, backgroundColor: accData.deviations.map((_, i) => accData.isAnomaly[i] ? chartThemeColors.red : chartThemeColors.accentBlue), borderWidth: 1, borderRadius: 4 }] };
-  const accBarOpts: ChartOptions<'bar'> = { ...(baseChartOptions as unknown as ChartOptions<'bar'>), scales: { x: { grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, font: { size: 9 } }, border: { display: false } }, y: { grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, callback: (v) => `${v}%`, font: { size: 10 } }, border: { display: false } } } };
+  const accBarData = {
+    labels: accData.labels,
+    datasets: [{
+      label: '偏差(%)',
+      data: accData.deviations,
+      backgroundColor: accData.deviations.map((_, i) => accData.isAnomaly[i] ? chartThemeColors.red : chartThemeColors.accentBlue),
+      borderWidth: 1, borderRadius: 4
+    }]
+  };
+  const accBarOpts: ChartOptions<'bar'> = {
+    ...(baseChartOptions as unknown as ChartOptions<'bar'>),
+    scales: {
+      x: { grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, font: { size: 9 } }, border: { display: false } },
+      y: { grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, callback: (v) => `${v}%`, font: { size: 10 } }, border: { display: false } }
+    }
+  };
 
   const boxPlotData = {
     labels: MATERIALS,
@@ -72,10 +121,34 @@ export default function Statistics() {
       { label: 'max', data: boxData.map((d) => d[4] - d[3]), backgroundColor: 'transparent', borderColor: 'transparent' },
     ],
   };
-  const boxPlotOpts: ChartOptions<'bar'> = { ...(baseChartOptions as unknown as ChartOptions<'bar'>), plugins: { ...(baseChartOptions as unknown as ChartOptions<'bar'>).plugins, legend: { display: false } }, scales: { x: { stacked: true, grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textSecondary }, border: { display: false } }, y: { stacked: true, grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, callback: (v) => `${v}ns`, font: { size: 10 } }, border: { display: false } } } };
+  const boxPlotOpts: ChartOptions<'bar'> = {
+    ...(baseChartOptions as unknown as ChartOptions<'bar'>),
+    plugins: { ...(baseChartOptions as unknown as ChartOptions<'bar'>).plugins, legend: { display: false } },
+    scales: {
+      x: { stacked: true, grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textSecondary }, border: { display: false } },
+      y: { stacked: true, grid: { color: chartThemeColors.gridLine }, ticks: { color: chartThemeColors.textMuted, callback: (v) => `${v}ns`, font: { size: 10 } }, border: { display: false } }
+    }
+  };
 
-  const pieData = { labels: anomalyPie.labels, datasets: [{ data: anomalyPie.data, backgroundColor: anomalyPie.colors, borderColor: 'rgba(10,22,40,0.8)', borderWidth: 2, hoverOffset: 6 }] };
-  const pieOpts: ChartOptions<'pie'> = { responsive: true, maintainAspectRatio: false, plugins: { legend: { position: 'right' as const, labels: { color: chartThemeColors.textSecondary, padding: 12, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle' } }, tooltip: { backgroundColor: chartThemeColors.tooltipBg, borderColor: chartThemeColors.tooltipBorder, borderWidth: 1, titleColor: chartThemeColors.textPrimary, bodyColor: chartThemeColors.textSecondary } } };
+  const pieData = {
+    labels: anomalyPie.labels,
+    datasets: [{ data: anomalyPie.data, backgroundColor: anomalyPie.colors, borderColor: 'rgba(10,22,40,0.8)', borderWidth: 2, hoverOffset: 6 }]
+  };
+  const pieOpts: ChartOptions<'pie'> = {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'right' as const, labels: { color: chartThemeColors.textSecondary, padding: 12, font: { size: 11 }, usePointStyle: true, pointStyle: 'circle' } },
+      tooltip: { backgroundColor: chartThemeColors.tooltipBg, borderColor: chartThemeColors.tooltipBorder, borderWidth: 1, titleColor: chartThemeColors.textPrimary, bodyColor: chartThemeColors.textSecondary }
+    }
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <Loader2 className="w-8 h-8 animate-spin text-magnetic-blue" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-5">
@@ -126,7 +199,7 @@ export default function Statistics() {
               <motion.div key={w.type} initial={{ opacity: 0, x: -10 }} animate={{ opacity: 1, x: 0 }} className="p-3 rounded-lg bg-space-800/40 border border-magnetic-blue/5">
                 <div className="flex items-center justify-between mb-2"><span className="text-sm font-medium text-gray-200">{w.label}</span><span className="text-sm font-bold" style={{ color: w.color }}>{w.count} 次</span></div>
                 <div className="h-1.5 rounded-full bg-space-900/60 overflow-hidden">
-                  <motion.div initial={{ width: 0 }} animate={{ width: `${(w.count / 34) * 100}%` }} transition={{ duration: 0.8, ease: 'easeOut' }} className="h-full rounded-full" style={{ backgroundColor: w.color }} />
+                  <motion.div initial={{ width: 0 }} animate={{ width: `${(w.count / maxWarningCount) * 100}%` }} transition={{ duration: 0.8, ease: 'easeOut' }} className="h-full rounded-full" style={{ backgroundColor: w.color }} />
                 </div>
               </motion.div>
             ))}
